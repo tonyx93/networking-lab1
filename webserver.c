@@ -9,16 +9,40 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #define PORT 3456    //Specifies which port to listen on
 #define MSGLEN 2048   //Max message length to be sent at a time
 #define QUELEN 10    //Max queue length of connecting clients
 
+int sockfd;
+
+void quit(int sig) {
+	// Clean up
+	printf("Server is shutting down\n");
+	close(sockfd);
+
+	// Exit program
+	exit(sig);
+}
+
+/*
+	Notes:
+
+   struct sockaddr_in {
+	   short int			sin_family; // Address family, AF_INET
+	   unsigned short int	sin_port; // Port number
+	   struct in_addr;		sin_addr; // Internet address
+	   unsigned char;		sin_zero[8]; // Same size as struct sockaddr
+   };
+
+*/
 int main()
 {
-	int sockfd;
 	struct sockaddr_in server;
 	char buffer[MSGLEN];
+	pid_t pid;
   
 	// Create a file descriptor for a socket
 	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
@@ -47,8 +71,10 @@ int main()
 		exit(errno);
     }
 
+	signal(SIGINT, quit);
 	//Server running...
 	printf("Server is now listening for connections\n");
+	printf("Pres CTRL-c to stop the server\n");
 	while(1)
 	{
 		int clientfd;
@@ -59,94 +85,119 @@ int main()
 		clientfd = accept(sockfd,(struct sockaddr *)&client, &clientlen);
 		printf("%s:%d connected\n", inet_ntoa(client.sin_addr), ntohs(client.sin_port));
 
-		/* BEGIN HTTP */
-      
-		char *word;
-		char *line;
-		recv(clientfd,buffer,MSGLEN,0);      // read client request
-		printf("Client request:\n%s\n",buffer);
-		word = strtok(buffer," "); //Parse the method type
-		if(strcmp(word,"GET")==0) //GET
-		{
-			char *res;
-			char *version;
-			res = strtok(NULL," "); //Parse resource
-			version = strtok(NULL,"\n");//Parse version
-			strtok(NULL,"\n");
-			line = strtok(NULL,"\n"); //Parse Response Headers
-			while(strlen(line)>1) //Will exit loop when line is an empty line
-			{
-				//I don't know what I'm supposed to do with the headers
-				//line contains the header information so manipulate that string
-				//printf("%s\n",line);
-				line = strtok(NULL,"\n");
-			}
-			//At this point, buffer contains the optional message body
-	  
-			//Server response for GET
-			char buf2[256]; //Another buffer for storing bytes
-			char *directory;
-			struct tm timeinfo; //For time stuff
-			time_t rawtime;
-			buf2[0] = '.';
-			FILE *file;
-			directory = strcat(buf2,res);
-			file = fopen(directory,"r");
-			if(file==NULL)
-			{
-				sprintf(buffer,"HTTP/1.1 404 Not Found\r\n"); //File not found
-				strcat(buffer,"Date: "); //Date header
-				time(&rawtime);
-				timeinfo = *gmtime(&rawtime);
-				strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
-				strcat(buffer,buf2);
-				strcat(buffer,"\r\n");
-				//Other headers can go here
-				strcat(buffer,"Connection: close\r\n\r\n");
-			}
-			else
-			{
-				struct stat fstat; //Get file stats
-				stat(directory,&fstat);
+		/* Fork child process to service connection */
+		if ( (pid = fork() ) == 0) {
 
-				sprintf(buffer,"HTTP/1.1 200 OK\r\n"); //Status Line
-				strcat(buffer,"Date: "); //Date header
-				time(&rawtime);
-				timeinfo = *gmtime(&rawtime);
-				strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
-				strcat(buffer,buf2);
-				strcat(buffer,"\r\n");
-				strcat(buffer,"Last-Modified: "); //Last Modified header
-				timeinfo = *gmtime(&(fstat.st_mtime));
-				strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
-				strcat(buffer,buf2);
-				strcat(buffer,"\r\n");
-				strcat(buffer,"Content-Type: text/html; charset=UTF-8\r\n"); //Content Type header
-				strcat(buffer,"Content-Length: "); //Content Length header
-				sprintf(buf2,"%lld",fstat.st_size);
-				strcat(buffer,buf2);
-				strcat(buffer,"\r\n");
-				strcat(buffer,"Connection: close\r\n\r\n"); //Connection header and empty line
+			// Close the server socket to process the request
 
-				fread(buf2,1,fstat.st_size,file);
-				strcat(buffer,buf2);
-				fclose(file);
+			if ( close(sockfd) < 0 ) {
+				perror("Error closing server socket in child process serving client.");
+				exit(errno);
 			}
+
+			// Service the request
+			char *word;
+			char *line;
+
+			// Read client request
+			recv(clientfd,buffer,MSGLEN,0);
+			// Output request header to console
+			printf("Client request:\n%s\n",buffer);
+
+			word = strtok(buffer," "); //Parse the method type
+			if(strcmp(word,"GET")==0) //GET
+			{
+				char *res;
+				char *version;
+				res = strtok(NULL," "); //Parse resource
+				printf("Resource: %s",res);
+				version = strtok(NULL,"\n");//Parse version
+				printf("Version: %s",version);
+				strtok(NULL,"\n");
+				line = strtok(NULL,"\n"); //Parse Response Headers
+				while(strlen(line)>1) //Will exit loop when line is an empty line
+				{
+					//I don't know what I'm supposed to do with the headers
+					//line contains the header information so manipulate that string
+					//printf("Line:%s\n",line);
+					line = strtok(NULL,"\n");
+				}
+				//At this point, buffer contains the optional message body
+		  
+				//Server response for GET
+				char buf2[256]; //Another buffer for storing bytes
+				char *directory;
+				struct tm timeinfo; //For time stuff
+				time_t rawtime;
+				buf2[0] = '.';
+				FILE *file;
+				directory = strcat(buf2,res);
+				file = fopen(directory,"r");
+
+				if(file==NULL)
+				{
+					sprintf(buffer,"HTTP/1.1 404 Not Found\r\n"); //File not found
+					strcat(buffer,"Date: "); //Date header
+					time(&rawtime);
+					timeinfo = *gmtime(&rawtime);
+					strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
+					strcat(buffer,buf2);
+					strcat(buffer,"\r\n");
+					//Other headers can go here
+					strcat(buffer,"Connection: close\r\n\r\n");
+				}
+				else {
+					struct stat fstat; //Get file stats
+					stat(directory,&fstat);
+
+
+					sprintf(buffer,"HTTP/1.1 200 OK\r\n"); //Status Line
+					strcat(buffer,"Date: "); //Date header
+					time(&rawtime);
+					timeinfo = *gmtime(&rawtime);
+					strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
+					strcat(buffer,buf2);
+					strcat(buffer,"\r\n");
+
+					timeinfo = *gmtime(&(fstat.st_mtime));
+					strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
+					strcat(buffer,buf2);
+					strcat(buffer,"\r\n");
+					strcat(buffer,"Content-Type: text/html; charset=UTF-8\r\n"); //Content Type header
+					strcat(buffer,"Content-Length: "); //Content Length header
+
+					sprintf(buf2,"%lld",fstat.st_size);
+					strcat(buffer,buf2);
+					strcat(buffer,"\r\n");
+					strcat(buffer,"Connection: close\r\n\r\n"); //Connection header and empty line
+
+					fread(buf2,1,fstat.st_size,file);
+					strcat(buffer,buf2);
+					fclose(file);
+				}
+			}
+
 			send(clientfd, buffer, MSGLEN, 0);
 			printf("Server response:\n%s\n",buffer);
 
-			//Client should reply with a Connection: close message
-			recv(clientfd, buffer, MSGLEN, 0);      // read client request
-			printf("Client response:\n%s\n",buffer);
+			// Close client connection and exit child process
+			if ( close(clientfd) < 0 ) {
+				perror("Error closing client connection.");
+				exit(errno);
+			}
+			exit(0);
 		}
-		/* END HTTP */
-      
-		//Close connection
-		close(clientfd);
-		printf("%s:%d disconnected\n", inet_ntoa(client.sin_addr), ntohs(client.sin_port));
+
+		/* Still in parent process */
+
+		// Close the connected socket so a new connection can be accepted
+		if ( close(clientfd) < 0 ) {
+			perror("Error closing client connection in parent.");
+			exit(errno);
+		}
+
+		waitpid(-1, NULL, WNOHANG);
 	}
 
-	//Clean up
-	close(sockfd);
 	return 0;
 }
