@@ -41,6 +41,7 @@ void quit(int sig) {
 */
 int main()
 {
+	signal(SIGINT, quit);
 	struct sockaddr_in server;
 	char buffer[MSGLEN];
 	pid_t pid;
@@ -72,7 +73,6 @@ int main()
 		exit(errno);
     }
 
-	signal(SIGINT, quit);
 	//Server running...
 	printf("Server is now listening for connections\n");
 	printf("Press CTRL-c to stop the server\n");
@@ -80,7 +80,7 @@ int main()
 	{
 		int clientfd;
 		struct sockaddr_in client;
-		int clientlen = sizeof(client);
+		unsigned int clientlen = sizeof(client);
 
 		//Accept a connection
 		clientfd = accept(sockfd,(struct sockaddr *)&client, &clientlen);
@@ -98,7 +98,10 @@ int main()
 			}
 
 			// Service the request
-			char *word;
+			char *type;
+			int req; //Integer representation of type 0=HEAD 1=GET
+			char *res;
+			char *version;
 			char *line;
 			char buf2[256]; //Another buffer for storing bytes
 			memset(buffer,0,MSGLEN);
@@ -109,30 +112,31 @@ int main()
 			// Output request header to console
 			printf("Client request:\n%s\n",buffer);
 
-			word = strtok(buffer," "); //Parse the method type
-			if(strcmp(word,"GET")==0) //GET
-			{
-				char *res;
-				char *version;
-				res = strtok(NULL," "); //Parse resource
-				//printf("Resource: %s\n",res);
-				version = strtok(NULL,"\r");//Parse version
-				strtok(NULL,"\n");
-				//printf("Version: %s\n",version);
-				strtok(NULL,"\n");
-				line = strtok(NULL,"\n"); //Parse Response Headers
-				while(strlen(line)>1) //Will exit loop when line is an empty line
+			type = strtok(buffer," "); //Parse the method type
+			if(strcmp(type,"HEAD")==0)
+			  req = 0;
+			if(strcmp(type,"GET")==0)
+			  req = 1;
+			res = strtok(NULL," "); //Parse resource
+			//printf("Resource: %s\n",res);
+			version = strtok(NULL,"\r");//Parse version
+			strtok(NULL,"\n");
+			//printf("Version: %s\n",version);
+			strtok(NULL,"\n");
+			line = strtok(NULL,"\n"); //Parse Response Headers
+			while(strlen(line)>1) //Will exit loop when line is an empty line
 				{
-					//I don't know what I'm supposed to do with the headers
-					//line contains the header information so manipulate that string
+				  //I don't know what I'm supposed to do with the headers
+				  //line contains the header information so manipulate that string
 				  
 				  //print header
-				        //printf("%s\n",line);
-					line = strtok(NULL,"\n");
+				  //printf("%s\n",line);
+				  line = strtok(NULL,"\n");
 				}
-				//At this point, buffer contains the optional message body
-		  
-				//Server response for GET
+			//At this point, buffer contains the optional message body
+			
+			if( req==0 || req==1 ) //GET or PUT
+			{		  
 				char *directory;
 				struct tm timeinfo; //For time stuff
 				time_t rawtime;
@@ -158,7 +162,6 @@ int main()
 					struct stat fstat; //Get file stats
 					stat(directory,&fstat);
 
-
 					sprintf(buffer,"HTTP/1.1 200 OK\r\n"); //Status Line
 					strcat(buffer,"Date: "); //Date header
 					time(&rawtime);
@@ -175,13 +178,18 @@ int main()
 					strcat(buffer,"Content-Type: text/html\r\n"); //Content Type header
 					strcat(buffer,"Content-Length: "); //Content Length header
 
-					sprintf(buf2,"%lld",fstat.st_size);
+					fseek(file, 0L, SEEK_END);
+					sprintf(buf2,"%ld",ftell(file));
+					fseek(file, 0L, SEEK_SET);
 					strcat(buffer,buf2);
 					strcat(buffer,"\r\n");
 					strcat(buffer,"Connection: close\r\n\r\n"); //Connection header and empty line
 
-					fread(buf2,1,fstat.st_size,file);
-					strcat(buffer,buf2);
+					if(req==1) //GET
+					  {
+					    fread(buf2,1,fstat.st_size,file);
+					    strcat(buffer,buf2);					
+					  }					  
 					fclose(file);
 				}
 			}
