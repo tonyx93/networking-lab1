@@ -17,12 +17,13 @@
 #define QUELEN 10    //Max queue length of connecting clients
 
 int sockfd;
+FILE *file;
 
 void quit(int sig) {
 	// Clean up
 	printf("Server is shutting down\n");
 	close(sockfd);
-
+	
 	// Exit program
 	exit(sig);
 }
@@ -74,7 +75,7 @@ int main()
 	signal(SIGINT, quit);
 	//Server running...
 	printf("Server is now listening for connections\n");
-	printf("Pres CTRL-c to stop the server\n");
+	printf("Press CTRL-c to stop the server\n");
 	while(1)
 	{
 		int clientfd;
@@ -84,9 +85,10 @@ int main()
 		//Accept a connection
 		clientfd = accept(sockfd,(struct sockaddr *)&client, &clientlen);
 		printf("%s:%d connected\n", inet_ntoa(client.sin_addr), ntohs(client.sin_port));
+		pid = fork();
 
 		/* Fork child process to service connection */
-		if ( (pid = fork() ) == 0) {
+		if (pid == 0) {
 
 			// Close the server socket to process the request
 
@@ -98,6 +100,9 @@ int main()
 			// Service the request
 			char *word;
 			char *line;
+			char buf2[256]; //Another buffer for storing bytes
+			memset(buffer,0,MSGLEN);
+			memset(buf2,0,256);
 
 			// Read client request
 			recv(clientfd,buffer,MSGLEN,0);
@@ -110,29 +115,32 @@ int main()
 				char *res;
 				char *version;
 				res = strtok(NULL," "); //Parse resource
-				printf("Resource: %s",res);
-				version = strtok(NULL,"\n");//Parse version
-				printf("Version: %s",version);
+				//printf("Resource: %s\n",res);
+				version = strtok(NULL,"\r");//Parse version
+				strtok(NULL,"\n");
+				//printf("Version: %s\n",version);
 				strtok(NULL,"\n");
 				line = strtok(NULL,"\n"); //Parse Response Headers
 				while(strlen(line)>1) //Will exit loop when line is an empty line
 				{
 					//I don't know what I'm supposed to do with the headers
 					//line contains the header information so manipulate that string
-					//printf("Line:%s\n",line);
+				  
+				  //print header
+				        //printf("%s\n",line);
 					line = strtok(NULL,"\n");
 				}
 				//At this point, buffer contains the optional message body
 		  
 				//Server response for GET
-				char buf2[256]; //Another buffer for storing bytes
 				char *directory;
 				struct tm timeinfo; //For time stuff
 				time_t rawtime;
 				buf2[0] = '.';
-				FILE *file;
 				directory = strcat(buf2,res);
 				file = fopen(directory,"r");
+				memset(buffer,0,MSGLEN);
+				memset(buf2,0,256);
 
 				if(file==NULL)
 				{
@@ -159,11 +167,12 @@ int main()
 					strcat(buffer,buf2);
 					strcat(buffer,"\r\n");
 
+					strcat(buffer,"Last-Modified: "); //Last-Modified header
 					timeinfo = *gmtime(&(fstat.st_mtime));
 					strftime(buf2,sizeof(buf2), "%a, %d %b %Y %H:%M:%S %Z",&timeinfo);
 					strcat(buffer,buf2);
 					strcat(buffer,"\r\n");
-					strcat(buffer,"Content-Type: text/html; charset=UTF-8\r\n"); //Content Type header
+					strcat(buffer,"Content-Type: text/html\r\n"); //Content Type header
 					strcat(buffer,"Content-Length: "); //Content Length header
 
 					sprintf(buf2,"%lld",fstat.st_size);
@@ -177,8 +186,8 @@ int main()
 				}
 			}
 
-			send(clientfd, buffer, MSGLEN, 0);
 			printf("Server response:\n%s\n",buffer);
+			send(clientfd, buffer, MSGLEN, 0);
 
 			// Close client connection and exit child process
 			if ( close(clientfd) < 0 ) {
@@ -188,8 +197,9 @@ int main()
 			exit(0);
 		}
 
+		
 		/* Still in parent process */
-
+		  
 		// Close the connected socket so a new connection can be accepted
 		if ( close(clientfd) < 0 ) {
 			perror("Error closing client connection in parent.");
